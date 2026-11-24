@@ -3,6 +3,8 @@ package com.gathin.tvhome;
 import android.graphics.Canvas;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -18,7 +20,11 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
     private final float density;
     private final Paint band = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path clipPath = new Path();
     private final RectF rect = new RectF();
+    private int glowColor;
+    private float glowCenterX = Float.NaN;
 
     /** Extra band below the tiles for their names (always_show_names), in px. */
     private final float namesRoom;
@@ -59,6 +65,16 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
         edge.setStyle(Paint.Style.STROKE);
         edge.setStrokeWidth(density);
         edge.setColor(lightGlass ? 0x38FFFFFF : translucent ? 0x26FFFFFF : 0x1FFFFFFF);
+    }
+
+    void setGlow(int color, float centerX) {
+        this.glowColor = color;
+        this.glowCenterX = centerX;
+    }
+
+    void clearGlow() {
+        this.glowColor = 0;
+        this.glowCenterX = Float.NaN;
     }
 
     /** Concentric corners: the band's radius is the tiles' radius plus the band's padding around them. */
@@ -147,6 +163,21 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
             shaderBottom = rect.bottom;
         }
         c.drawRoundRect(rect, radius, radius, band);
+        if (glowColor != 0 && !Float.isNaN(glowCenterX)) {
+            int c0 = (glowColor & 0x00FFFFFF) | 0x80000000;
+            int c1 = (glowColor & 0x00FFFFFF) | 0x26000000;
+            glow.setShader(new RadialGradient(
+                    glowCenterX, rect.centerY(), rect.width() * 0.42f,
+                    new int[]{c0, c1, 0x00000000},
+                    new float[]{0f, 0.5f, 1f},
+                    Shader.TileMode.CLAMP));
+            clipPath.reset();
+            clipPath.addRoundRect(rect, radius, radius, Path.Direction.CW);
+            c.save();
+            c.clipPath(clipPath);
+            c.drawRect(rect, glow);
+            c.restore();
+        }
         c.drawRoundRect(rect, radius, radius, edge);
     }
 }

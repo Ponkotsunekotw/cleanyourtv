@@ -3,7 +3,10 @@ package com.gathin.tvhome;
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.Dialog;
+import android.app.Notification;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -47,6 +50,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.service.notification.StatusBarNotification;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextPaint;
@@ -106,6 +110,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     static final String ACTION_LAUNCHER_SETTINGS = "com.gathin.tvhome.action.LAUNCHER_SETTINGS";
     /** Sent by the "library" action word of app_keys: open the App library over Home (needs app_library). */
     static final String ACTION_APP_LIBRARY = "com.gathin.tvhome.action.APP_LIBRARY";
+    static final String ACTION_RESET_WALLPAPER = "com.gathin.tvhome.action.RESET_WALLPAPER";
     /** The system input switcher, forwarded here by InputsRequestActivity while handle_view_inputs is on. */
     static final String ACTION_VIEW_INPUTS = "com.android.tv.action.VIEW_INPUTS";
     /** Tiles per row and dock slots (res/values/config.xml, columns). Set in onCreate. */
@@ -145,6 +150,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private RecyclerView grid;
     private FrameLayout root;
     private WallpaperPlayer wallpaperPlayer;
+    private DockDecoration dockDecoration;
     private GlassView glass;
     private View ambient;
     private TextView heroName;
@@ -522,7 +528,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         // The glow is one bitmap, so its alpha can be applied while drawing it. Otherwise every frame of
         // a fade renders it into a full-screen offscreen buffer first.
         ambient.forceHasOverlappingRendering(false);
-        ambientGlow = cfg.ambientGlow;
+        ambientGlow = false;
         glowSnap = cfg.glowSnap;
         appGlow = cfg.appGlow;
         if (!ambientGlow) ambient.setVisibility(View.GONE);
@@ -688,8 +694,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             public void onChildViewDetachedFromWindow(@NonNull View v) {
             }
         });
-        if (dockRow) grid.addItemDecoration(new DockDecoration(COLUMNS, density, cinematic, cfg.alwaysShowNames, cfg.dockOpacity, cfg.dockGlass, cfg.dockEvenPadding, cfg.dockBand,
-                singleRow, cfg.dockBandAll));
+        if (dockRow) {
+            dockDecoration = new DockDecoration(COLUMNS, density, cinematic, cfg.alwaysShowNames, cfg.dockOpacity, cfg.dockGlass, cfg.dockEvenPadding, cfg.dockBand,
+                singleRow, cfg.dockBandAll);
+            grid.addItemDecoration(dockDecoration);
+        }
         if (cfg.fadeRows) TopFade.attach(grid, 48 * density);
         // Reduced motion: the tiles are simply there, with no entrance (reloadApps skips it there too).
         if (animations && !reducedMotion) {
@@ -832,8 +841,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
 
         btnInputs = findViewById(R.id.btnInputs);
+        btnNotifications = findViewById(R.id.btnNotifications);
         View btnSettings = findViewById(R.id.btnSettings);
         btnInputs.setOnClickListener(v -> showInputs());
+        btnNotifications.setOnClickListener(v -> showNotifications());
+        GuardRevival.setOnChange(this::updateNotificationsPill);
+        updateNotificationsPill();
         btnWifi.setOnClickListener(v -> openNetworkPill());
         btnVpn.setOnClickListener(v -> openVpnPill());
         btnWifi.setOnLongClickListener(v -> {
@@ -845,11 +858,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             ((TextView) btnSettings).setText(R.string.launcher_settings);
             ((TextView) btnSettings).setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_home_settings_pill, 0, 0, 0);
         }
-        btnSettings.setOnClickListener(v -> {
-            if (launcherSettingsButton) startActivityForResult(
-                    new Intent(this, LauncherSettingsActivity.class), LAUNCHER_SETTINGS_REQUEST);
-            else open(systemIntent(Settings.ACTION_SETTINGS));
-        });
+        btnSettings.setOnClickListener(v -> showSettingsMenu());
         btnReorder = findViewById(R.id.btnReorder);
         btnReorder.setOnClickListener(v -> toggleReorder());
         btnReorder.setVisibility(cfg.reorderButton ? View.VISIBLE : View.GONE);
@@ -1070,6 +1079,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (openLauncherSettingsIfAsked(intent)) return;
         if (openLibraryIfAsked(intent)) return;
         if (openInputsIfAsked(intent)) return;
+        if (intent != null && ACTION_RESET_WALLPAPER.equals(intent.getAction())) {
+            WallpaperServer.restoreDefaultWallpaper(this);
+            setIntent(new Intent(Intent.ACTION_MAIN));
+            recreate();
+            return;
+        }
         if (intent == null || !intent.hasCategory(Intent.CATEGORY_HOME)) return;
         if (gameDay != null && !stopped) gameDay.read();
         grid.scrollToPosition(0);
@@ -1152,6 +1167,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (gameDay != null) gameDay.start();
         sky.update();
         wallpaperPlayer.start();
+        updateNotificationsPill();
+        killBackgroundApps();
         handler.postDelayed(minuteTick, MINUTE_MS);
         if (festive && lamp != null) {
             lamp.start();
@@ -1397,6 +1414,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     @Override
     protected void onDestroy() {
+        GuardRevival.setOnChange(null);
         super.onDestroy();
         ViewTreeObserver tree = getWindow().getDecorView().getViewTreeObserver();
         if (tree.isAlive()) tree.removeOnGlobalFocusChangeListener(glassFocusListener);
@@ -1901,10 +1919,18 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 if (!animations || reducedMotion) grid.scrollBy(0, dy);
                 else grid.smoothScrollBy(0, dy);
             }
+            if (dockDecoration != null) {
+                dockDecoration.setGlow(adapter.ambientColorAt(position), r.exactCenterX() - grid.getLeft());
+                grid.invalidate();
+            }
             showHero(position, scroll ? r.top - dy : r.top);
         } else {
             // Below the dock (or in a plain grid) the glow follows the tile without the big name; letting it
             // fade out left the grid on plain black.
+            if (dockDecoration != null) {
+                dockDecoration.clearGlow();
+                grid.invalidate();
+            }
             showGlowOnly(position);
             // Scroll just enough so the whole glass (not only the tile) is visible.
             revealRect.set(0, -(int) pad * 2, item.getWidth(), item.getHeight() + (int) pad);
@@ -2226,25 +2252,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         heroArt.setAlpha(0f);
         heroShown = false;
         if (!ambientGlow) return;
-        if (!animations || reducedMotion) {
-            setAmbient(color);
-            ambient.setAlpha(1f);
-            return;
-        }
-        if (color == ambientColor && ambient.getBackground() != null) {
-            ambient.animate().alpha(1f).setDuration(300).start();
-            return;
-        }
-        if (glowSnap) {
-            setAmbient(color);
-            ambient.setAlpha(1f);
-            return;
-        }
-        // The same dip-and-swap as the dock's top shelf.
-        ambient.animate().alpha(0.35f).setDuration(ambient.getAlpha() > 0.35f ? 200 : 0).withEndAction(() -> {
-            setAmbient(color);
-            ambient.animate().alpha(1f).setDuration(500).start();
-        }).start();
+        if (!animations || reducedMotion) ambient.setAlpha(0f);
+        else ambient.animate().alpha(0f).setDuration(200).start();
     }
 
     private void hideHero() {
@@ -3067,6 +3076,160 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private ColorStateList wifiNoInternetTint, wifiOfflineTint;
     /** The app library button in the top bar (library_button). */
     private View btnLibraryTop;
+    private TextView btnNotifications;
+
+    private static final Set<String> KEEP_BG_PACKAGES = new HashSet<>(Arrays.asList(
+            "com.google.android.katniss",
+            "com.google.android.tv.remote.service",
+            "com.google.android.gms",
+            "com.android.vending",
+            "com.google.android.webview",
+            "com.android.systemui"
+    ));
+
+    private void killBackgroundApps() {
+        new Thread(() -> {
+            ActivityManager am = getSystemService(ActivityManager.class);
+            if (am == null) return;
+            PackageManager pm = getPackageManager();
+            String self = getPackageName();
+            for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
+                String pkg = ai.packageName;
+                if (pkg.equals(self) || KEEP_BG_PACKAGES.contains(pkg)) continue;
+                boolean userOrUpdated = (ai.flags & ApplicationInfo.FLAG_SYSTEM) == 0
+                        || (ai.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
+                if (userOrUpdated) {
+                    try {
+                        am.killBackgroundProcesses(pkg);
+                    } catch (RuntimeException ignored) {
+                    }
+                }
+            }
+        }, "kill-bg").start();
+    }
+
+    private List<StatusBarNotification> visibleNotifications() {
+        List<StatusBarNotification> out = new ArrayList<>();
+        for (StatusBarNotification sbn : GuardRevival.activeNotifications()) {
+            if (sbn == null || sbn.getNotification() == null) continue;
+            int flags = sbn.getNotification().flags;
+            if ((flags & Notification.FLAG_GROUP_SUMMARY) != 0) continue;
+            if ((flags & (Notification.FLAG_ONGOING_EVENT | Notification.FLAG_NO_CLEAR)) != 0) continue;
+            if (getPackageName().equals(sbn.getPackageName())) continue;
+            out.add(sbn);
+        }
+        return out;
+    }
+
+    private void updateNotificationsPill() {
+        if (btnNotifications == null) return;
+        int count = visibleNotifications().size();
+        String base = getString(R.string.notifications);
+        btnNotifications.setText(count > 0 ? base + " (" + count + ")" : base);
+    }
+
+    private void showNotifications() {
+        View panel = getLayoutInflater().inflate(R.layout.popup_inputs, root, false);
+        LinearLayout rows = panel.findViewById(R.id.rows);
+        PopupWindow popup = glassPopup(panel, (int) (320 * density));
+        List<StatusBarNotification> list = visibleNotifications();
+        if (list.isEmpty()) {
+            addInputRow(rows, popup, R.drawable.ic_notifications, getString(R.string.no_notifications), -1, () -> {});
+        } else {
+            PackageManager pm = getPackageManager();
+            for (StatusBarNotification sbn : list) {
+                Notification n = sbn.getNotification();
+                Bundle extras = n.extras;
+                CharSequence titleCs = extras != null ? extras.getCharSequence(Notification.EXTRA_TITLE) : null;
+                CharSequence textCs = extras != null ? extras.getCharSequence(Notification.EXTRA_TEXT) : null;
+                String appLabel = sbn.getPackageName();
+                try {
+                    appLabel = pm.getApplicationLabel(pm.getApplicationInfo(sbn.getPackageName(), 0)).toString();
+                } catch (PackageManager.NameNotFoundException ignored) {
+                }
+                String title = !TextUtils.isEmpty(titleCs) ? titleCs.toString() : appLabel;
+                String sub = !TextUtils.isEmpty(textCs) ? appLabel + " · " + textCs : appLabel;
+                final String key = sbn.getKey();
+                final PendingIntent pi = n.contentIntent;
+                final boolean autoCancel = (n.flags & Notification.FLAG_AUTO_CANCEL) != 0;
+                View row = addInputRow(rows, popup, R.drawable.ic_notifications, title, -1, () -> {
+                    if (pi != null) {
+                        try {
+                            pi.send();
+                        } catch (PendingIntent.CanceledException ignored) {
+                        }
+                    }
+                    if (autoCancel || pi == null) GuardRevival.dismiss(key);
+                    updateNotificationsPill();
+                });
+                TextView status = row.findViewById(R.id.status);
+                status.setText(sub);
+                status.setVisibility(View.VISIBLE);
+            }
+            addInputRow(rows, popup, R.drawable.ic_notifications, getString(R.string.clear_notifications), -1, () -> {
+                GuardRevival.clearAll();
+                updateNotificationsPill();
+            });
+        }
+        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        popup.setWidth(Math.max((int) (240 * density), Math.min(panel.getMeasuredWidth(), (int) (380 * density))));
+        dropIn(popup, panel, btnNotifications, getResources().getBoolean(R.bool.rtl_menu_bar) ? Gravity.START : Gravity.END);
+        if (rows.getChildCount() > 0) rows.getChildAt(0).requestFocus();
+    }
+
+    private void showWallpaperQrDialog() {
+        Dialog dlg = new Dialog(this, android.R.style.Theme_DeviceDefault_Dialog_NoActionBar);
+        Window w = dlg.getWindow();
+        if (w != null) w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+        int pad = Math.round(28 * density);
+        box.setPadding(pad, pad, pad, pad);
+        box.setBackgroundResource(R.drawable.glass_panel);
+
+        TextView title = new TextView(this);
+        title.setText(R.string.upload_wallpaper);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        box.addView(title);
+
+        ImageView qrView = new ImageView(this);
+        int qrPx = Math.round(220 * density);
+        LinearLayout.LayoutParams qlp = new LinearLayout.LayoutParams(qrPx, qrPx);
+        qlp.topMargin = Math.round(18 * density);
+        qlp.bottomMargin = Math.round(14 * density);
+        box.addView(qrView, qlp);
+
+        TextView hint = new TextView(this);
+        hint.setTextColor(0xCCFFFFFF);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        hint.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
+                Math.round(340 * density), LinearLayout.LayoutParams.WRAP_CONTENT);
+        box.addView(hint, hlp);
+
+        final WallpaperServer[] holder = new WallpaperServer[1];
+        WallpaperServer srv = new WallpaperServer(this, () -> {
+            if (holder[0] != null) holder[0].stop();
+            if (dlg.isShowing()) dlg.dismiss();
+            recreate();
+        });
+        holder[0] = srv;
+        try {
+            int port = srv.start();
+            String url = "http://" + WallpaperServer.localIpAddress() + ":" + port + "/";
+            qrView.setImageBitmap(QrCode.encode(url, qrPx));
+            hint.setText(getString(R.string.upload_wallpaper_hint, url));
+        } catch (Exception e) {
+            hint.setText(e.getMessage());
+        }
+
+        dlg.setOnDismissListener(d -> srv.stop());
+        dlg.setContentView(box);
+        dlg.show();
+    }
     /** The open library came from that button: closing it returns there instead of scrolling to the grid's end. */
     private boolean libraryFromTopBar;
     /** The open library came from the VPN pill (vpn_pill, no VPN app): closing it returns there while the pill still shows. */
@@ -3738,6 +3901,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         PopupWindow popup = glassPopup(panel, (int) (200 * density));
         if (!launcherSettingsButton) addSettingsMenuRow(rows, popup, R.string.launcher_settings, () -> startActivityForResult(
                 new Intent(this, LauncherSettingsActivity.class), LAUNCHER_SETTINGS_REQUEST));
+        addSettingsMenuRow(rows, popup, R.string.upload_wallpaper, this::showWallpaperQrDialog);
         // Firmware that ships its own settings app next to the AOSP one (Xiaomi China is one): the
         // vendor app holds pages the AOSP settings has no row for, such as Account & Security with
         // the ADB switch. Offered here only while one of them is installed.

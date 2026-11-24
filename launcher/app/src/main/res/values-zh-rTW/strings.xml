@@ -97,4 +97,9 @@
     <string name="clock_format_system">系統</string>
     <string name="clock_format_12">12 小時制</string>
     <string name="clock_format_24">24 小時制</string>
+    <string name="notifications">通知</string>
+    <string name="no_notifications">目前沒有通知</string>
+    <string name="clear_notifications">全部清除</string>
+    <string name="upload_wallpaper">掃碼上傳桌布</string>
+    <string name="upload_wallpaper_hint">請用同一 Wi-Fi 下的手機掃描 QR Code，或開啟 %1$s</string>
 </resources>
