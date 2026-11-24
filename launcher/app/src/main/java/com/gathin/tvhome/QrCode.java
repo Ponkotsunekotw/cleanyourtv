@@ -127,7 +127,7 @@ final class QrCode {
         }
         placeFormatBits(modules, n, 0); // Level L (01) + Mask 0 (000)
 
-        int quiet = 2;
+        int quiet = 4;
         int total = n + quiet * 2;
         int scale = Math.max(1, sizePx / total);
         int imgSize = total * scale;
@@ -202,8 +202,10 @@ final class QrCode {
                 r[i][8] = true;
             }
         }
-        for (int i = n - 8; i < n; i++) r[8][i] = true;
-        for (int i = n - 7; i < n; i++) r[i][8] = true;
+        for (int i = n - 8; i < n; i++) {
+            r[8][i] = true;
+            r[i][8] = true;
+        }
     }
 
     private static void placeFormatBits(boolean[][] m, int n, int mask) {
@@ -218,7 +220,7 @@ final class QrCode {
         m[8][8] = ((bits >> 7) & 1) != 0;
         m[7][8] = ((bits >> 8) & 1) != 0;
         for (int i = 9; i < 15; i++) m[14 - i][8] = ((bits >> i) & 1) != 0;
-        for (int i = 0; i < 7; i++) m[8][n - 1 - i] = ((bits >> i) & 1) != 0;
-        for (int i = 7; i < 15; i++) m[n - 15 + i][8] = ((bits >> i) & 1) != 0;
+        for (int i = 0; i < 8; i++) m[n - 1 - i][8] = ((bits >> i) & 1) != 0;
+        for (int i = 8; i < 15; i++) m[8][n - 15 + i] = ((bits >> i) & 1) != 0;
     }
 }
